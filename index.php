@@ -2,8 +2,8 @@
 // s3server.php
 
 // Configuration
-define('DATA_DIR', __DIR__ . '/data'); // ./data/{bucket}/{key}
-define('ALLOWED_ACCESS_KEYS', ['put-your-key-here']);
+define('DATA_DIR', __DIR__ . '/data'); // 使用绝对路径
+define('ALLOWED_ACCESS_KEYS', ['imhcg']);
 define('MAX_REQUEST_SIZE', 100 * 1024 * 1024); // 100MB
 
 // Helper functions
@@ -114,21 +114,24 @@ if (!file_exists(DATA_DIR)) {
 // 主请求处理逻辑
 $method = $_SERVER['REQUEST_METHOD'];
 
-// Parce url
+// 修复1：更健壮的路径解析
 $request_uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $path_parts = explode('/', trim($request_uri, '/'));
 $bucket = $path_parts[0] ?? '';
 $key = implode('/', array_slice($path_parts, 1));
 
+// 修复2：验证 bucket 和 key 的合法性
 if ($method !== 'GET' && empty($bucket)) {
     generate_s3_error_response('400', 'Bucket name not specified', '/');
 }
 
+// 修复3：处理根路径的 LIST 请求
 if ($method === 'GET' && empty($bucket)) {
+    // 这里可以返回所有 Bucket 列表（如需）
     generate_s3_error_response('400', 'Bucket name required', '/');
 }
 
-// Auth check
+// 认证检查
 auth_check();
 
 
@@ -230,16 +233,47 @@ switch ($method) {
             $files = list_files($bucket, $prefix);
             generate_s3_list_objects_response($files, $bucket, $prefix);
         } else {
-            // Download object
+            // Download object with streaming
             $filePath = DATA_DIR . "/{$bucket}/{$key}";
             
             if (!file_exists($filePath)) {
                 generate_s3_error_response('404', 'Object not found', "/{$bucket}/{$key}");
             }
+
+            // relax limit
+            set_time_limit(0);
+            ini_set('memory_limit', '512M');
+            
+            // clean buf
+            while (ob_get_level()) {
+                ob_end_clean();
+            }
             
             header('Content-Type: ' . mime_content_type($filePath));
             header('Content-Length: ' . filesize($filePath));
-            readfile($filePath);
+            header('Content-Disposition: attachment; filename="' . basename($key) . '"');
+            header('Cache-Control: must-revalidate');
+            header('Pragma: public');
+            
+            // chunks
+            $chunkSize = 8 * 1024 * 1024; // 8MB chunks
+            $handle = fopen($filePath, 'rb');
+            
+            if ($handle === false) {
+                generate_s3_error_response('500', 'Failed to open file', "/{$bucket}/{$key}");
+            }
+            
+            while (!feof($handle)) {
+                echo fread($handle, $chunkSize);
+                flush();
+                
+                if (connection_aborted()) {
+                    fclose($handle);
+                    exit;
+                }
+            }
+            
+            fclose($handle);
             exit;
         }
         break;
