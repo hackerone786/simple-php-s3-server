@@ -1,21 +1,33 @@
 <?php
-// s3server.php
 
 // Configuration
 define('DATA_DIR', __DIR__ . '/data'); // 使用绝对路径
-define('ALLOWED_ACCESS_KEYS', ['imhcg']);
+define('ALLOWED_ACCESS_KEYS', ['put_your_key_here']);
 define('MAX_REQUEST_SIZE', 100 * 1024 * 1024); // 100MB
 
 // Helper functions
-function extract_access_key_id($authorization) {
-    if (empty($authorization)) return null;
+function extract_access_key_id()
+{
+    // 1. 从 Authorization header 提取
+    $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     if (preg_match('/AWS4-HMAC-SHA256 Credential=([^\/]+)\//', $authorization, $matches)) {
         return $matches[1];
     }
+
+    // 2. 从 X-Amz-Credential URL 参数提取
+    $credential = $_GET['X-Amz-Credential'] ?? '';
+    if ($credential) {
+        $parts = explode('/', $credential);
+        if (count($parts) > 0 && !empty($parts[0])) {
+            return $parts[0];
+        }
+    }
+
     return null;
 }
 
-function auth_check() {
+function auth_check()
+{
     $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     $access_key_id = extract_access_key_id($authorization);
     if (!$access_key_id || !in_array($access_key_id, ALLOWED_ACCESS_KEYS)) {
@@ -25,25 +37,27 @@ function auth_check() {
     return true;
 }
 
-function generate_s3_error_response($code, $message, $resource = '') {
+function generate_s3_error_response($code, $message, $resource = '')
+{
     $xml = new SimpleXMLElement('<?xml version="1.0" encoding="UTF-8"?><Error></Error>');
     $xml->addChild('Code', $code);
     $xml->addChild('Message', $message);
     $xml->addChild('Resource', $resource);
-    
+
     header('Content-Type: application/xml');
-    http_response_code((int)$code);
+    http_response_code((int) $code);
     echo $xml->asXML();
     exit;
 }
 
-function generate_s3_list_objects_response($files, $bucket, $prefix = '') {
+function generate_s3_list_objects_response($files, $bucket, $prefix = '')
+{
     $xml = new SimpleXMLElement('<?xml version="1.0" encoding="UTF-8"?><ListBucketResult></ListBucketResult>');
     $xml->addChild('Name', $bucket);
     $xml->addChild('Prefix', $prefix);
     $xml->addChild('MaxKeys', '1000');
     $xml->addChild('IsTruncated', 'false');
-    
+
     foreach ($files as $file) {
         $contents = $xml->addChild('Contents');
         $contents->addChild('Key', $file['key']);
@@ -51,57 +65,63 @@ function generate_s3_list_objects_response($files, $bucket, $prefix = '') {
         $contents->addChild('Size', $file['size']);
         $contents->addChild('StorageClass', 'STANDARD');
     }
-    
+
     header('Content-Type: application/xml');
     echo $xml->asXML();
     exit;
 }
 
-function generate_s3_create_multipart_upload_response($bucket, $key, $uploadId) {
+function generate_s3_create_multipart_upload_response($bucket, $key, $uploadId)
+{
     $xml = new SimpleXMLElement('<?xml version="1.0" encoding="UTF-8"?><InitiateMultipartUploadResult></InitiateMultipartUploadResult>');
     $xml->addChild('Bucket', $bucket);
     $xml->addChild('Key', $key);
     $xml->addChild('UploadId', $uploadId);
-    
+
     header('Content-Type: application/xml');
     echo $xml->asXML();
     exit;
 }
 
-function generate_s3_complete_multipart_upload_response($bucket, $key, $uploadId) {
+function generate_s3_complete_multipart_upload_response($bucket, $key, $uploadId)
+{
     $xml = new SimpleXMLElement('<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUploadResult></CompleteMultipartUploadResult>');
     $xml->addChild('Location', "http://{$_SERVER['HTTP_HOST']}/{$bucket}/{$key}");
     $xml->addChild('Bucket', $bucket);
     $xml->addChild('Key', $key);
     $xml->addChild('UploadId', $uploadId);
-    
+
     header('Content-Type: application/xml');
     echo $xml->asXML();
     exit;
 }
 
-function list_files($bucket, $prefix = '') {
+function list_files($bucket, $prefix = '')
+{
     $dir = DATA_DIR . "/{$bucket}";
     $files = [];
-    
-    if (!file_exists($dir)) return $files;
-    
+
+    if (!file_exists($dir))
+        return $files;
+
     $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir));
-    
+
     foreach ($iterator as $file) {
-        if ($file->isDir() || strpos($file->getFilename(), '.') === 0) continue;
-        
+        if ($file->isDir() || strpos($file->getFilename(), '.') === 0)
+            continue;
+
         $relativePath = substr($file->getPathname(), strlen($dir) + 1);
-        
-        if ($prefix && strpos($relativePath, $prefix) !== 0) continue;
-        
+
+        if ($prefix && strpos($relativePath, $prefix) !== 0)
+            continue;
+
         $files[] = [
             'key' => $relativePath,
             'size' => $file->getSize(),
             'timestamp' => $file->getMTime()
         ];
     }
-    
+
     return $files;
 }
 
@@ -149,14 +169,14 @@ switch ($method) {
             $uploadId = $_GET['uploadId'];
             $partNumber = $_GET['partNumber'];
             $uploadDir = DATA_DIR . "/{$bucket}/{$key}-temp/{$uploadId}";
-            
+
             if (!file_exists($uploadDir)) {
                 generate_s3_error_response('404', 'Upload ID not found', "/{$bucket}/{$key}");
             }
-            
+
             $partPath = "{$uploadDir}/{$partNumber}";
             file_put_contents($partPath, file_get_contents('php://input'));
-            
+
             header('ETag: ' . md5_file($partPath));
             http_response_code(200);
             exit;
@@ -164,17 +184,17 @@ switch ($method) {
             // Upload single object
             $filePath = DATA_DIR . "/{$bucket}/{$key}";
             $dir = dirname($filePath);
-            
+
             if (!file_exists($dir)) {
                 mkdir($dir, 0777, true);
             }
-            
+
             file_put_contents($filePath, file_get_contents('php://input'));
             http_response_code(200);
             exit;
         }
         break;
-        
+
     case 'POST':
         // Handle POST (multipart upload)
         if (isset($_GET['uploads'])) {
@@ -182,30 +202,31 @@ switch ($method) {
             $uploadId = bin2hex(random_bytes(16));
             $uploadDir = DATA_DIR . "/{$bucket}/{$key}-temp/{$uploadId}";
             mkdir($uploadDir, 0777, true);
-            
+
             generate_s3_create_multipart_upload_response($bucket, $key, $uploadId);
         } elseif (isset($_GET['uploadId'])) {
             // Complete multipart upload
             $uploadId = $_GET['uploadId'];
             $uploadDir = DATA_DIR . "/{$bucket}/{$key}-temp/{$uploadId}";
-            
+
             if (!file_exists($uploadDir)) {
                 generate_s3_error_response('404', 'Upload ID not found', "/{$bucket}/{$key}");
             }
-            
+
             // Parse parts from XML
             $xml = simplexml_load_string(file_get_contents('php://input'));
             $parts = [];
             foreach ($xml->Part as $part) {
-                $parts[(int)$part->PartNumber] = (string)$part->ETag;
+                $parts[(int) $part->PartNumber] = (string) $part->ETag;
             }
             ksort($parts);
-            
+
             // Merge parts
             $filePath = DATA_DIR . "/{$bucket}/{$key}";
             $dir = dirname($filePath);
-            if (!file_exists($dir)) mkdir($dir, 0777, true);
-            
+            if (!file_exists($dir))
+                mkdir($dir, 0777, true);
+
             $fp = fopen($filePath, 'w');
             foreach (array_keys($parts) as $partNumber) {
                 $partPath = "{$uploadDir}/{$partNumber}";
@@ -215,16 +236,16 @@ switch ($method) {
                 fwrite($fp, file_get_contents($partPath));
             }
             fclose($fp);
-            
+
             // Clean up
             system("rm -rf " . escapeshellarg(DATA_DIR . "/{$bucket}/{$key}-temp"));
-            
+
             generate_s3_complete_multipart_upload_response($bucket, $key, $uploadId);
         } else {
             generate_s3_error_response('400', 'Invalid POST request: missing uploads or uploadId parameter', "/{$bucket}/{$key}");
         }
         break;
-        
+
     case 'GET':
         // Handle GET (download or list)
         if (empty($key)) {
@@ -233,91 +254,117 @@ switch ($method) {
             $files = list_files($bucket, $prefix);
             generate_s3_list_objects_response($files, $bucket, $prefix);
         } else {
-            // Download object with streaming
+            // Download object with streaming and range support
             $filePath = DATA_DIR . "/{$bucket}/{$key}";
-            
             if (!file_exists($filePath)) {
                 generate_s3_error_response('404', 'Object not found', "/{$bucket}/{$key}");
             }
 
-            // relax limit
-            set_time_limit(0);
-            ini_set('memory_limit', '512M');
-            
-            // clean buf
-            while (ob_get_level()) {
-                ob_end_clean();
-            }
-            
-            header('Content-Type: ' . mime_content_type($filePath));
-            header('Content-Length: ' . filesize($filePath));
-            header('Content-Disposition: attachment; filename="' . basename($key) . '"');
-            header('Cache-Control: must-revalidate');
-            header('Pragma: public');
-            
-            // chunks
-            $chunkSize = 8 * 1024 * 1024; // 8MB chunks
-            $handle = fopen($filePath, 'rb');
-            
-            if ($handle === false) {
+            // Get file size
+            $filesize = filesize($filePath);
+
+            // Set default headers
+            $mimeType = mime_content_type($filePath) ?: 'application/octet-stream';
+            $fp = fopen($filePath, 'rb');
+
+            if ($fp === false) {
                 generate_s3_error_response('500', 'Failed to open file', "/{$bucket}/{$key}");
             }
-            
-            while (!feof($handle)) {
-                echo fread($handle, $chunkSize);
-                flush();
-                
-                if (connection_aborted()) {
-                    fclose($handle);
+
+            // Default response: full file
+            $start = 0;
+            $end = $filesize - 1;
+            $length = $filesize;
+
+            // Check for Range header
+            $range = $_SERVER['HTTP_RANGE'] ?? '';
+            if ($range && preg_match('/^bytes=(\d*)-(\d*)$/', $range, $matches)) {
+                http_response_code(206); // Partial Content
+
+                $start = $matches[1] === '' ? 0 : intval($matches[1]);
+                $end = $matches[2] === '' ? $filesize - 1 : min(intval($matches[2]), $filesize - 1);
+
+                if ($start > $end || $start < 0) {
+                    header("Content-Range: bytes */$filesize");
+                    http_response_code(416); // Requested Range Not Satisfiable
                     exit;
                 }
+
+                $length = $end - $start + 1;
+
+                header("Content-Range: bytes {$start}-{$end}/{$filesize}");
+                header("Content-Length: " . $length);
+            } else {
+                http_response_code(200);
+                header("Content-Length: " . $filesize);
             }
-            
-            fclose($handle);
+
+            header('Accept-Ranges: bytes');
+            header("Content-Type: $mimeType");
+
+            header("Content-Disposition: attachment; filename=\"" . basename($key) . "\"");
+            header("Cache-Control: private");
+            header("Pragma: public");
+            header('X-Powered-By: S3');
+
+            // Seek to the requested range
+            fseek($fp, $start);
+
+            $remaining = $length;
+            $chunkSize = 8 * 1024 * 1024; // 8MB per chunk
+            while (!feof($fp) && $remaining > 0 && connection_aborted() == false) {
+                $buffer = fread($fp, min($chunkSize, $remaining));
+                echo $buffer;
+                $remaining -= strlen($buffer);
+                flush();
+            }
+
+            fclose($fp);
             exit;
         }
         break;
-        
+
+
     case 'HEAD':
         // Handle HEAD (metadata)
         $filePath = DATA_DIR . "/{$bucket}/{$key}";
-        
+
         if (!file_exists($filePath)) {
             generate_s3_error_response('404', 'Resource not found', "/{$bucket}/{$key}");
         }
-        
+
         header('Content-Length: ' . filesize($filePath));
         header('Content-Type: ' . mime_content_type($filePath));
         http_response_code(200);
         exit;
-        
+
     case 'DELETE':
         // Handle DELETE (delete object or abort upload)
         if (isset($_GET['uploadId'])) {
             // Abort multipart upload
             $uploadId = $_GET['uploadId'];
             $uploadDir = DATA_DIR . "/{$bucket}/{$key}-temp/{$uploadId}";
-            
+
             if (!file_exists($uploadDir)) {
                 generate_s3_error_response('404', 'Upload ID not found', "/{$bucket}/{$key}");
             }
-            
+
             system("rm -rf " . escapeshellarg($uploadDir));
             http_response_code(204);
             exit;
         } else {
             // Delete object
             $filePath = DATA_DIR . "/{$bucket}/{$key}";
-            
+
             if (file_exists($filePath)) {
                 unlink($filePath);
             }
-            
+
             http_response_code(204);
             exit;
         }
         break;
-        
+
     default:
         generate_s3_error_response('405', 'Method not allowed');
 }

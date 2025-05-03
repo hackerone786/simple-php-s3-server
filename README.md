@@ -80,6 +80,6 @@ define('ALLOWED_ACCESS_KEYS', ['改为你想要的访问密钥']);
 #### 示例：在 Minio 中使用
 
 ```python
-oss_client = Minio("https://your-domain", access_key="改为你想要的访问密钥", secret_key="*", secure=True)
+oss_client = Minio("your-domain.com", access_key="改为你想要的访问密钥", secret_key="*", secure=True)
 
 ```

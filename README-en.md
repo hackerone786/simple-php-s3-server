@@ -76,6 +76,6 @@ define('ALLOWED_ACCESS_KEYS', ['your-access-key-here']);
 #### Demo: Using in Minio
 
 ```python
-oss_client = Minio("https://your-domain", access_key="your-access-key-here", secret_key="*", secure=True)
+oss_client = Minio("your-domain.com", access_key="your-access-key-here", secret_key="*", secure=True)
 
 ```
