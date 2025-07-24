@@ -102,4 +102,4 @@ if ($http_code === 200 && !empty($file_content)) {
 
 echo "\n=== Test Complete ===\n";
 echo "Note: The temporary link will expire in 1 hour.\n";
-echo "You can test expiration by waiting or manually modifying the temp_links.json file.\n";
+echo "This is a stateless implementation - no files are stored for link management.\n";

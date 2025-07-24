@@ -4,7 +4,6 @@
 define('DATA_DIR', __DIR__ . '/data'); // 使用绝对路径
 define('ALLOWED_ACCESS_KEYS', ['put_your_key_here']);
 define('MAX_REQUEST_SIZE', 100 * 1024 * 1024); // 100MB
-define('TEMP_LINKS_FILE', __DIR__ . '/temp_links.json'); // Temporary links storage
 define('TEMP_LINK_EXPIRY', 3600); // 1 hour in seconds
 
 // Helper functions
@@ -39,83 +38,41 @@ function auth_check()
     return true;
 }
 
-// Temporary link functions
-function load_temp_links()
+// Stateless temporary link functions
+function generate_temp_link_key($bucket, $key, $access_key, $timestamp)
 {
-    if (!file_exists(TEMP_LINKS_FILE)) {
-        return [];
-    }
-    $data = file_get_contents(TEMP_LINKS_FILE);
-    return json_decode($data, true) ?: [];
-}
-
-function save_temp_links($links)
-{
-    file_put_contents(TEMP_LINKS_FILE, json_encode($links, JSON_PRETTY_PRINT));
-}
-
-function generate_temp_link_key($bucket, $key, $access_key)
-{
-    $timestamp = time();
     $data = $timestamp . $bucket . $key . $access_key;
     return md5($data);
 }
 
 function create_temp_link($bucket, $key, $access_key)
 {
-    $links = load_temp_links();
+    $timestamp = time();
+    $link_key = generate_temp_link_key($bucket, $key, $access_key, $timestamp);
     
-    // Clean expired links
-    $current_time = time();
-    $links = array_filter($links, function($link) use ($current_time) {
-        return $link['expires_at'] > $current_time;
-    });
-    
-    // Generate new link
-    $link_key = generate_temp_link_key($bucket, $key, $access_key);
-    $links[$link_key] = [
-        'bucket' => $bucket,
-        'key' => $key,
-        'access_key' => $access_key,
-        'created_at' => $current_time,
-        'expires_at' => $current_time + TEMP_LINK_EXPIRY
+    return [
+        'key' => $link_key,
+        'timestamp' => $timestamp,
+        'expires_at' => $timestamp + TEMP_LINK_EXPIRY
     ];
-    
-    save_temp_links($links);
-    
-    return $link_key;
 }
 
-function verify_temp_link($link_key)
+function verify_temp_link($link_key, $bucket, $key, $access_key)
 {
-    $links = load_temp_links();
-    
-    if (!isset($links[$link_key])) {
-        return false;
-    }
-    
-    $link = $links[$link_key];
     $current_time = time();
     
-    // Check if expired
-    if ($link['expires_at'] <= $current_time) {
-        // Remove expired link
-        unset($links[$link_key]);
-        save_temp_links($links);
-        return false;
+    // Check all possible timestamps within the expiry window
+    for ($timestamp = $current_time - TEMP_LINK_EXPIRY; $timestamp <= $current_time; $timestamp++) {
+        $expected_key = generate_temp_link_key($bucket, $key, $access_key, $timestamp);
+        if ($expected_key === $link_key) {
+            // Check if this timestamp is still valid
+            if ($timestamp + TEMP_LINK_EXPIRY > $current_time) {
+                return true;
+            }
+        }
     }
     
-    return $link;
-}
-
-function cleanup_expired_links()
-{
-    $links = load_temp_links();
-    $current_time = time();
-    $links = array_filter($links, function($link) use ($current_time) {
-        return $link['expires_at'] > $current_time;
-    });
-    save_temp_links($links);
+    return false;
 }
 
 function generate_s3_error_response($code, $message, $resource = '')
@@ -211,11 +168,6 @@ if (!file_exists(DATA_DIR)) {
     mkdir(DATA_DIR, 0777, true);
 }
 
-// Cleanup expired temporary links (run occasionally)
-if (rand(1, 100) <= 5) { // 5% chance to run cleanup
-    cleanup_expired_links();
-}
-
 
 // 主请求处理逻辑
 $method = $_SERVER['REQUEST_METHOD'];
@@ -248,14 +200,16 @@ if ($method === 'POST' && $bucket === 'temp-link' && !empty($key)) {
     
     // Create temporary link
     $access_key = extract_access_key_id();
-    $link_key = create_temp_link($target_bucket, $target_key, $access_key);
+    $link_data = create_temp_link($target_bucket, $target_key, $access_key);
     
-    // Return the temporary link
-    $temp_url = "http://{$_SERVER['HTTP_HOST']}/temp/{$link_key}";
+    // Return the temporary link with bucket and key encoded in URL
+    $encoded_bucket = urlencode($target_bucket);
+    $encoded_key = urlencode($target_key);
+    $temp_url = "http://{$_SERVER['HTTP_HOST']}/temp/{$link_data['key']}/{$encoded_bucket}/{$encoded_key}";
     header('Content-Type: application/json');
     echo json_encode([
         'temp_link' => $temp_url,
-        'expires_at' => date('Y-m-d H:i:s', time() + TEMP_LINK_EXPIRY),
+        'expires_at' => date('Y-m-d H:i:s', $link_data['expires_at']),
         'expires_in_seconds' => TEMP_LINK_EXPIRY
     ]);
     exit;
@@ -263,21 +217,37 @@ if ($method === 'POST' && $bucket === 'temp-link' && !empty($key)) {
 
 // Handle temporary link access
 if ($method === 'GET' && $bucket === 'temp' && !empty($key)) {
-    $link_key = $key;
-    $link_data = verify_temp_link($link_key);
+    // Parse the URL: /temp/{link_key}/{encoded_bucket}/{encoded_key}
+    $path_parts = explode('/', $key);
+    $link_key = $path_parts[0] ?? '';
+    $encoded_bucket = $path_parts[1] ?? '';
+    $encoded_key = $path_parts[2] ?? '';
     
-    if (!$link_data) {
+    if (empty($link_key) || empty($encoded_bucket) || empty($encoded_key)) {
+        generate_s3_error_response('400', 'Invalid temporary link format', "/temp/{$key}");
+    }
+    
+    // Decode bucket and key
+    $target_bucket = urldecode($encoded_bucket);
+    $target_key = urldecode($encoded_key);
+    
+    // Try to verify with all possible access keys
+    $link_valid = false;
+    foreach (ALLOWED_ACCESS_KEYS as $access_key) {
+        if (verify_temp_link($link_key, $target_bucket, $target_key, $access_key)) {
+            $link_valid = true;
+            break;
+        }
+    }
+    
+    if (!$link_valid) {
         generate_s3_error_response('404', 'Temporary link not found or expired', "/temp/{$link_key}");
     }
     
-    // Use the link data for file access
-    $bucket = $link_data['bucket'];
-    $key = $link_data['key'];
-    
     // Continue with file download (skip authentication)
-    $filePath = DATA_DIR . "/{$bucket}/{$key}";
+    $filePath = DATA_DIR . "/{$target_bucket}/{$target_key}";
     if (!file_exists($filePath)) {
-        generate_s3_error_response('404', 'Object not found', "/{$bucket}/{$key}");
+        generate_s3_error_response('404', 'Object not found', "/{$target_bucket}/{$target_key}");
     }
 
     // Get file size
@@ -288,7 +258,7 @@ if ($method === 'GET' && $bucket === 'temp' && !empty($key)) {
     $fp = fopen($filePath, 'rb');
 
     if ($fp === false) {
-        generate_s3_error_response('500', 'Failed to open file', "/{$bucket}/{$key}");
+        generate_s3_error_response('500', 'Failed to open file', "/{$target_bucket}/{$target_key}");
     }
 
     // Default response: full file
@@ -321,7 +291,7 @@ if ($method === 'GET' && $bucket === 'temp' && !empty($key)) {
 
     header('Accept-Ranges: bytes');
     header("Content-Type: $mimeType");
-    header("Content-Disposition: attachment; filename=\"" . basename($key) . "\"");
+    header("Content-Disposition: attachment; filename=\"" . basename($target_key) . "\"");
     header("Cache-Control: private");
     header("Pragma: public");
     header('X-Powered-By: S3');
