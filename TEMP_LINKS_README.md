@@ -1,70 +1,85 @@
-# Temporary File Links (Stateless)
+# Temporary File Links (Client-Side Generation)
 
-This S3-compatible file server now supports stateless temporary file links with the following features:
+This S3-compatible file server supports client-side temporary file link generation with the following features:
 
-- **MD5-based keys**: Generated using timestamp + bucket + key + access_key
+- **Client-side generation**: No server requests needed to create links
+- **MD5-based verification**: Uses timestamp + bucket + key + access_key
 - **1-hour expiration**: Links automatically expire after 3600 seconds
 - **No storage required**: Links are verified on-the-fly without saving to disk
 - **No authentication required**: Access files without AWS credentials
 
 ## How It Works
 
-The system uses a simple algorithm that doesn't require storing links:
+The system uses a simple algorithm that allows clients to generate links themselves:
 
-1. **Link Creation**: Generate MD5 hash of `timestamp + bucket + key + access_key`
-2. **Link Verification**: Check all possible timestamps within the expiry window
-3. **URL Format**: `/temp/{md5_key}/{encoded_bucket}/{encoded_key}`
+1. **Client generates link**: `md5(timestamp + bucket + key + access_key)`
+2. **URL format**: `/temp/{access_key}/{timestamp}/{encoded_bucket}/{encoded_key}`
+3. **Server verifies**: Checks if the link is valid and not expired
 
-## Usage
+## Client-Side Usage
 
-### Creating a Temporary Link
+### PHP Client
 
-To create a temporary link for a file, send a POST request to `/temp-link/create` with the following JSON body:
+Include the generator script and use it:
+
+```php
+<?php
+require_once 'temp_link_generator.php';
+
+// Generate a temporary link
+$link_data = create_temp_link('my-bucket', 'path/to/file.txt');
+echo "Temporary link: " . $link_data['temp_link'];
+echo "Expires: " . $link_data['expires_at'];
+?>
+```
+
+### JavaScript Client
+
+Include the generator script and use it:
+
+```javascript
+// Load the script first
+// <script src="temp_link_generator.js"></script>
+
+// Generate a temporary link
+const linkData = TempLinkGenerator.createTempLink('my-bucket', 'path/to/file.txt');
+console.log('Temporary link:', linkData.tempLink);
+console.log('Expires at:', linkData.expiresAt);
+```
+
+### Command Line Usage
 
 ```bash
-curl -X POST http://your-server.com/temp-link/create \
-  -H "Authorization: AWS4-HMAC-SHA256 Credential=your_access_key/..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "bucket": "your-bucket",
-    "key": "path/to/your/file.txt"
-  }'
+php temp_link_generator.php my-bucket path/to/file.txt
 ```
 
-**Response:**
-```json
-{
-  "temp_link": "http://your-server.com/temp/abc123def456.../your-bucket/path%2Fto%2Fyour%2Ffile.txt",
-  "expires_at": "2024-01-15 14:30:00",
-  "expires_in_seconds": 3600
-}
+## URL Structure
+
+```
+/temp/{access_key}/{timestamp}/{urlencoded_bucket}/{urlencoded_key}
 ```
 
-### Accessing Files via Temporary Link
-
-Simply visit the temporary link URL in a browser or use curl:
-
-```bash
-curl "http://your-server.com/temp/abc123def456.../your-bucket/path%2Fto%2Fyour%2Ffile.txt"
+Example:
 ```
-
-The file will be downloaded without requiring any authentication.
+/temp/my_access_key/1705312200/my-bucket/path%2Fto%2Ffile.txt
+```
 
 ## Algorithm Details
 
-### Link Generation
+### Link Generation (Client-Side)
 ```php
 $timestamp = time();
 $data = $timestamp . $bucket . $key . $access_key;
 $link_key = md5($data);
+$url = "/temp/{$access_key}/{$timestamp}/" . urlencode($bucket) . "/" . urlencode($key);
 ```
 
-### Link Verification
+### Link Verification (Server-Side)
 ```php
-// Check all possible timestamps within the expiry window
-for ($timestamp = $current_time - TEMP_LINK_EXPIRY; $timestamp <= $current_time; $timestamp++) {
+// Check if timestamp is within expiry window
+if ($timestamp + TEMP_LINK_EXPIRY > $current_time) {
     $expected_key = md5($timestamp . $bucket . $key . $access_key);
-    if ($expected_key === $link_key && $timestamp + TEMP_LINK_EXPIRY > $current_time) {
+    if ($expected_key === $link_key) {
         return true; // Valid link
     }
 }
@@ -72,11 +87,12 @@ for ($timestamp = $current_time - TEMP_LINK_EXPIRY; $timestamp <= $current_time;
 
 ## Features
 
-1. **Stateless Design**: No database or file storage required
-2. **Secure Key Generation**: Uses MD5 hash of timestamp + bucket + key + access_key
-3. **Automatic Expiration**: Links expire after exactly 1 hour
-4. **Range Request Support**: Supports HTTP Range headers for partial downloads
-5. **File Validation**: Checks if the target file exists before creating a link
+1. **Client-Side Generation**: No server requests needed to create links
+2. **Stateless Design**: No database or file storage required
+3. **Secure Verification**: Uses MD5 hash of timestamp + bucket + key + access_key
+4. **Automatic Expiration**: Links expire after exactly 1 hour
+5. **Range Request Support**: Supports HTTP Range headers for partial downloads
+6. **File Validation**: Server checks if the target file exists
 
 ## Security Considerations
 
@@ -85,28 +101,64 @@ for ($timestamp = $current_time - TEMP_LINK_EXPIRY; $timestamp <= $current_time;
 - The MD5 key includes a timestamp to prevent replay attacks
 - Links automatically expire after 1 hour
 - No persistent storage means no cleanup required
+- Access key is visible in the URL (consider using HTTPS)
 
-## URL Structure
+## Configuration
 
-```
-/temp/{md5_hash}/{urlencoded_bucket}/{urlencoded_key}
+Update these values in the generator scripts:
+
+```php
+// PHP version
+$server_url = 'http://your-server.com';
+$access_key = 'your_access_key';
+$temp_link_expiry = 3600; // 1 hour
 ```
 
-Example:
-```
-/temp/a1b2c3d4e5f6.../my-bucket/path%2Fto%2Ffile.txt
+```javascript
+// JavaScript version
+const SERVER_URL = 'http://your-server.com';
+const ACCESS_KEY = 'your_access_key';
+const TEMP_LINK_EXPIRY = 3600; // 1 hour
 ```
 
 ## Error Handling
 
 - **404**: File not found or temporary link expired
-- **400**: Missing bucket/key parameters or invalid link format
-- **401**: Authentication required for creating links
+- **400**: Invalid link format or missing parameters
 
-## Advantages of Stateless Approach
+## Advantages of Client-Side Generation
 
-1. **No Storage Overhead**: No need to store or manage link data
-2. **No Cleanup Required**: Expired links are automatically invalid
-3. **Scalable**: Works across multiple server instances
-4. **Simple**: Easy to understand and maintain
-5. **Secure**: No persistent data that could be compromised
+1. **No Server Requests**: Generate links instantly without API calls
+2. **Better Performance**: No network latency for link creation
+3. **Offline Capability**: Can generate links even when server is unreachable
+4. **Scalable**: No server resources used for link generation
+5. **Simple**: Easy to integrate into any application
+
+## Example Integration
+
+### Web Application
+```html
+<script src="temp_link_generator.js"></script>
+<script>
+function shareFile(bucket, key) {
+    const linkData = TempLinkGenerator.createTempLink(bucket, key);
+    // Copy link to clipboard or display to user
+    navigator.clipboard.writeText(linkData.tempLink);
+    alert('Temporary link copied to clipboard!');
+}
+</script>
+```
+
+### Mobile App
+```javascript
+// React Native example
+import { createTempLink } from './temp_link_generator.js';
+
+const shareFile = (bucket, key) => {
+    const linkData = createTempLink(bucket, key);
+    Share.share({
+        message: linkData.tempLink,
+        title: 'Temporary File Link'
+    });
+};
+```
