@@ -4,6 +4,7 @@
 define('DATA_DIR', __DIR__ . '/data'); // 使用绝对路径
 define('ALLOWED_ACCESS_KEYS', ['put_your_key_here']);
 define('MAX_REQUEST_SIZE', 100 * 1024 * 1024); // 100MB
+define('TEMP_LINK_EXPIRY', 3600); // 1 hour in seconds
 
 // Helper functions
 function extract_access_key_id()
@@ -35,6 +36,31 @@ function auth_check()
         exit;
     }
     return true;
+}
+
+// Stateless temporary link functions
+function generate_temp_link_key($bucket, $key, $access_key, $timestamp)
+{
+    $data = $timestamp . $bucket . $key . $access_key;
+    return md5($data);
+}
+
+function verify_temp_link($link_key, $bucket, $key, $access_key)
+{
+    $current_time = time();
+    
+    // Check all possible timestamps within the expiry window
+    for ($timestamp = $current_time - TEMP_LINK_EXPIRY; $timestamp <= $current_time; $timestamp++) {
+        $expected_key = generate_temp_link_key($bucket, $key, $access_key, $timestamp);
+        if ($expected_key === $link_key) {
+            // Check if this timestamp is still valid
+            if ($timestamp + TEMP_LINK_EXPIRY > $current_time) {
+                return true;
+            }
+        }
+    }
+    
+    return false;
 }
 
 function generate_s3_error_response($code, $message, $resource = '')
@@ -139,6 +165,101 @@ $request_uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $path_parts = explode('/', trim($request_uri, '/'));
 $bucket = $path_parts[0] ?? '';
 $key = implode('/', array_slice($path_parts, 1));
+
+
+
+// Handle temporary link access
+if ($method === 'GET' && $bucket === 'temp' && !empty($key)) {
+    // Parse the URL: /temp/{access_key}/{timestamp}/{encoded_bucket}/{encoded_key}
+    $path_parts = explode('/', $key);
+    $access_key = $path_parts[0] ?? '';
+    $timestamp = $path_parts[1] ?? '';
+    $encoded_bucket = $path_parts[2] ?? '';
+    $encoded_key = $path_parts[3] ?? '';
+    
+    if (empty($access_key) || empty($timestamp) || empty($encoded_bucket) || empty($encoded_key)) {
+        generate_s3_error_response('400', 'Invalid temporary link format', "/temp/{$key}");
+    }
+    
+    // Decode bucket and key
+    $target_bucket = urldecode($encoded_bucket);
+    $target_key = urldecode($encoded_key);
+    
+    // Generate the expected link key
+    $expected_key = generate_temp_link_key($target_bucket, $target_key, $access_key, $timestamp);
+    
+    // Verify the link is valid
+    if (!verify_temp_link($expected_key, $target_bucket, $target_key, $access_key)) {
+        generate_s3_error_response('404', 'Temporary link not found or expired', "/temp/{$key}");
+    }
+    
+    // Continue with file download (skip authentication)
+    $filePath = DATA_DIR . "/{$target_bucket}/{$target_key}";
+    if (!file_exists($filePath)) {
+        generate_s3_error_response('404', 'Object not found', "/{$target_bucket}/{$target_key}");
+    }
+
+    // Get file size
+    $filesize = filesize($filePath);
+
+    // Set default headers
+    $mimeType = mime_content_type($filePath) ?: 'application/octet-stream';
+    $fp = fopen($filePath, 'rb');
+
+    if ($fp === false) {
+        generate_s3_error_response('500', 'Failed to open file', "/{$target_bucket}/{$target_key}");
+    }
+
+    // Default response: full file
+    $start = 0;
+    $end = $filesize - 1;
+    $length = $filesize;
+
+    // Check for Range header
+    $range = $_SERVER['HTTP_RANGE'] ?? '';
+    if ($range && preg_match('/^bytes=(\d*)-(\d*)$/', $range, $matches)) {
+        http_response_code(206); // Partial Content
+
+        $start = $matches[1] === '' ? 0 : intval($matches[1]);
+        $end = $matches[2] === '' ? $filesize - 1 : min(intval($matches[2]), $filesize - 1);
+
+        if ($start > $end || $start < 0) {
+            header("Content-Range: bytes */$filesize");
+            http_response_code(416); // Requested Range Not Satisfiable
+            exit;
+        }
+
+        $length = $end - $start + 1;
+
+        header("Content-Range: bytes {$start}-{$end}/{$filesize}");
+        header("Content-Length: " . $length);
+    } else {
+        http_response_code(200);
+        header("Content-Length: " . $filesize);
+    }
+
+    header('Accept-Ranges: bytes');
+    header("Content-Type: $mimeType");
+    header("Content-Disposition: attachment; filename=\"" . basename($target_key) . "\"");
+    header("Cache-Control: private");
+    header("Pragma: public");
+    header('X-Powered-By: S3');
+
+    // Seek to the requested range
+    fseek($fp, $start);
+
+    $remaining = $length;
+    $chunkSize = 8 * 1024 * 1024; // 8MB per chunk
+    while (!feof($fp) && $remaining > 0 && connection_aborted() == false) {
+        $buffer = fread($fp, min($chunkSize, $remaining));
+        echo $buffer;
+        $remaining -= strlen($buffer);
+        flush();
+    }
+
+    fclose($fp);
+    exit;
+}
 
 // 修复2：验证 bucket 和 key 的合法性
 if ($method !== 'GET' && empty($bucket)) {
