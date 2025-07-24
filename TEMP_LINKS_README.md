@@ -20,8 +20,7 @@ The system uses a simple algorithm that allows clients to generate links themsel
 
 ### PHP Client
 
-Include the generator script and use it:
-
+#### Basic Usage
 ```php
 <?php
 require_once 'temp_link_generator.php';
@@ -33,24 +32,288 @@ echo "Expires: " . $link_data['expires_at'];
 ?>
 ```
 
+#### Advanced Usage
+```php
+<?php
+require_once 'temp_link_generator.php';
+
+// Generate link with specific timestamp
+$timestamp = time() - 1800; // 30 minutes ago
+$link_data = generate_temp_link('my-bucket', 'path/to/file.txt', 'my_access_key', $timestamp);
+
+// Use in web application
+function shareFile($bucket, $key) {
+    $link_data = create_temp_link($bucket, $key);
+    return [
+        'url' => $link_data['temp_link'],
+        'expires' => $link_data['expires_at'],
+        'download_link' => '<a href="' . $link_data['temp_link'] . '">Download File</a>'
+    ];
+}
+
+// Example usage
+$share_data = shareFile('documents', 'report.pdf');
+echo $share_data['download_link'];
+?>
+```
+
+#### Laravel Integration
+```php
+<?php
+// In your Laravel controller
+use App\Services\TempLinkService;
+
+class FileController extends Controller
+{
+    public function share(Request $request)
+    {
+        $bucket = $request->input('bucket');
+        $key = $request->input('key');
+        
+        require_once base_path('app/Services/temp_link_generator.php');
+        $link_data = create_temp_link($bucket, $key);
+        
+        return response()->json([
+            'success' => true,
+            'temp_link' => $link_data['temp_link'],
+            'expires_at' => $link_data['expires_at']
+        ]);
+    }
+}
+?>
+```
+
 ### JavaScript Client
 
-Include the generator script and use it:
+#### Browser Usage
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>File Sharing</title>
+    <script src="temp_link_generator.js"></script>
+</head>
+<body>
+    <button onclick="shareFile('my-bucket', 'path/to/file.txt')">Share File</button>
+    
+    <script>
+        function shareFile(bucket, key) {
+            const linkData = TempLinkGenerator.createTempLink(bucket, key);
+            
+            // Copy to clipboard
+            navigator.clipboard.writeText(linkData.tempLink).then(() => {
+                alert('Temporary link copied to clipboard!');
+            });
+            
+            // Or display in a modal
+            showShareModal(linkData);
+        }
+        
+        function showShareModal(linkData) {
+            const modal = document.createElement('div');
+            modal.innerHTML = `
+                <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+                           background: white; padding: 20px; border: 1px solid #ccc;">
+                    <h3>Temporary Link Generated</h3>
+                    <p><strong>Link:</strong> <a href="${linkData.tempLink}" target="_blank">${linkData.tempLink}</a></p>
+                    <p><strong>Expires:</strong> ${linkData.expiresAt}</p>
+                    <button onclick="this.parentElement.remove()">Close</button>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+    </script>
+</body>
+</html>
+```
 
+#### Node.js Usage
 ```javascript
-// Load the script first
-// <script src="temp_link_generator.js"></script>
+const TempLinkGenerator = require('./temp_link_generator.js');
 
 // Generate a temporary link
 const linkData = TempLinkGenerator.createTempLink('my-bucket', 'path/to/file.txt');
 console.log('Temporary link:', linkData.tempLink);
 console.log('Expires at:', linkData.expiresAt);
+
+// Use in Express.js application
+const express = require('express');
+const app = express();
+
+app.post('/api/share-file', (req, res) => {
+    const { bucket, key } = req.body;
+    
+    const linkData = TempLinkGenerator.createTempLink(bucket, key);
+    
+    res.json({
+        success: true,
+        temp_link: linkData.tempLink,
+        expires_at: linkData.expiresAt
+    });
+});
+
+app.listen(3000, () => {
+    console.log('Server running on port 3000');
+});
 ```
 
-### Command Line Usage
+#### React Component
+```jsx
+import React, { useState } from 'react';
+import { TempLinkGenerator } from './temp_link_generator.js';
 
+function FileSharingComponent({ bucket, key }) {
+    const [tempLink, setTempLink] = useState(null);
+    const [loading, setLoading] = useState(false);
+
+    const generateLink = () => {
+        setLoading(true);
+        
+        try {
+            const linkData = TempLinkGenerator.createTempLink(bucket, key);
+            setTempLink(linkData);
+        } catch (error) {
+            console.error('Error generating link:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const copyToClipboard = () => {
+        navigator.clipboard.writeText(tempLink.tempLink);
+        alert('Link copied to clipboard!');
+    };
+
+    return (
+        <div className="file-sharing">
+            <button onClick={generateLink} disabled={loading}>
+                {loading ? 'Generating...' : 'Generate Temporary Link'}
+            </button>
+            
+            {tempLink && (
+                <div className="link-info">
+                    <h3>Temporary Link Generated</h3>
+                    <p><strong>Link:</strong> <a href={tempLink.tempLink} target="_blank" rel="noopener noreferrer">{tempLink.tempLink}</a></p>
+                    <p><strong>Expires:</strong> {tempLink.expiresAt}</p>
+                    <button onClick={copyToClipboard}>Copy Link</button>
+                </div>
+            )}
+        </div>
+    );
+}
+
+export default FileSharingComponent;
+```
+
+### Python Client
+
+#### Basic Usage
+```python
+from temp_link_generator import create_temp_link
+
+# Generate a temporary link
+link_data = create_temp_link('my-bucket', 'path/to/file.txt')
+print(f"Temporary link: {link_data['temp_link']}")
+print(f"Expires: {link_data['expires_at']}")
+```
+
+#### Flask Integration
+```python
+from flask import Flask, request, jsonify
+from temp_link_generator import create_temp_link
+
+app = Flask(__name__)
+
+@app.route('/api/share-file', methods=['POST'])
+def share_file():
+    data = request.get_json()
+    bucket = data.get('bucket')
+    key = data.get('key')
+    
+    if not bucket or not key:
+        return jsonify({'error': 'Missing bucket or key'}), 400
+    
+    try:
+        link_data = create_temp_link(bucket, key)
+        return jsonify({
+            'success': True,
+            'temp_link': link_data['temp_link'],
+            'expires_at': link_data['expires_at']
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/share/<bucket>/<path:key>')
+def share_file_page(bucket, key):
+    link_data = create_temp_link(bucket, key)
+    return f"""
+    <html>
+        <head><title>File Share</title></head>
+        <body>
+            <h1>File Share</h1>
+            <p><strong>File:</strong> {bucket}/{key}</p>
+            <p><strong>Temporary Link:</strong> <a href="{link_data['temp_link']}">{link_data['temp_link']}</a></p>
+            <p><strong>Expires:</strong> {link_data['expires_at']}</p>
+        </body>
+    </html>
+    """
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+#### Django Integration
+```python
+# views.py
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+import json
+from temp_link_generator import create_temp_link
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def share_file(request):
+    try:
+        data = json.loads(request.body)
+        bucket = data.get('bucket')
+        key = data.get('key')
+        
+        if not bucket or not key:
+            return JsonResponse({'error': 'Missing bucket or key'}, status=400)
+        
+        link_data = create_temp_link(bucket, key)
+        
+        return JsonResponse({
+            'success': True,
+            'temp_link': link_data['temp_link'],
+            'expires_at': link_data['expires_at']
+        })
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+# urls.py
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('api/share-file/', views.share_file, name='share_file'),
+]
+```
+
+#### Command Line Usage
 ```bash
-php temp_link_generator.php my-bucket path/to/file.txt
+# Generate a temporary link
+python temp_link_generator.py my-bucket path/to/file.txt
+
+# Output:
+# === Temporary Link Generated ===
+# Bucket: my-bucket
+# Key: path/to/file.txt
+# Link: http://localhost/temp/my_access_key/1705312200/my-bucket/path%2Fto%2Ffile.txt
+# Expires: 2024-01-15T15:30:00
+# Expires in: 3600 seconds
+# ===============================
 ```
 
 ## URL Structure
@@ -121,6 +384,13 @@ const ACCESS_KEY = 'your_access_key';
 const TEMP_LINK_EXPIRY = 3600; // 1 hour
 ```
 
+```python
+# Python version
+SERVER_URL = 'http://your-server.com'
+ACCESS_KEY = 'your_access_key'
+TEMP_LINK_EXPIRY = 3600  # 1 hour
+```
+
 ## Error Handling
 
 - **404**: File not found or temporary link expired
@@ -134,31 +404,21 @@ const TEMP_LINK_EXPIRY = 3600; // 1 hour
 4. **Scalable**: No server resources used for link generation
 5. **Simple**: Easy to integrate into any application
 
-## Example Integration
+## Testing
 
-### Web Application
-```html
-<script src="temp_link_generator.js"></script>
-<script>
-function shareFile(bucket, key) {
-    const linkData = TempLinkGenerator.createTempLink(bucket, key);
-    // Copy link to clipboard or display to user
-    navigator.clipboard.writeText(linkData.tempLink);
-    alert('Temporary link copied to clipboard!');
-}
-</script>
+### PHP Test
+```bash
+php test_temp_links.php
 ```
 
-### Mobile App
-```javascript
-// React Native example
-import { createTempLink } from './temp_link_generator.js';
+### Python Test
+```bash
+python temp_link_generator.py test-bucket test-file.txt
+```
 
-const shareFile = (bucket, key) => {
-    const linkData = createTempLink(bucket, key);
-    Share.share({
-        message: linkData.tempLink,
-        title: 'Temporary File Link'
-    });
-};
+### JavaScript Test
+```javascript
+// In browser console
+const linkData = TempLinkGenerator.createTempLink('test-bucket', 'test-file.txt');
+console.log('Test link:', linkData.tempLink);
 ```
